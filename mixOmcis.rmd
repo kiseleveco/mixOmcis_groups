@@ -1,0 +1,191 @@
+Setting libraries and workk dir
+
+```{r}
+library(mixOmics)
+library(dplyr)
+library(tibble)
+library(janitor)
+library(fs)
+library(condvis)
+
+
+experiment <- list()
+workdir <- path("/Users/kiselev/Documents/multiomics/mixOmcis_groups")
+
+#read sample names file
+meta <- read.table(paste0(workdir, "/meta.csv"), header = TRUE, sep = ",")
+colnames(meta) <- c("proteo", "metabo", "group")
+groups <- as.factor(meta$group)
+
+
+```
+
+Read metabolomics data and try different normalization methods
+
+```{r, fig.width=10, fig.height=7}
+metabo <- read.table(paste0(workdir, "/metabo.csv"), header = TRUE, sep = ",", row.names = 1, check.names = FALSE)
+
+#Order columns according to meta file
+metabo <- metabo[, meta$metabo] %>% t()
+
+#normalize data by the total sum of each sample
+metabo_sum <- metabo / rowSums(metabo)
+
+#Log normalize data
+metabo_log <- log2(metabo + 1)
+
+#Log normalize data
+metabo_sum_log <- log2(metabo_sum + 1)
+
+
+
+#TODO: Eigen normalization https://rdrr.io/github/idrblab/NOREVA/man/EIGENMS.html
+
+metabo.pca <- pca(metabo, ncomp = 2, scale = TRUE, center = TRUE)
+plotIndiv(metabo.pca, ind.names = FALSE,
+          title = "PCA: metabo non-normalized",
+          group=groups,
+          pch = as.numeric(factor(groups)),
+          pch.levels =groups,
+          legend = TRUE)
+
+# create a vector of 8 colors
+colors <- c("blue", "orange", "grey","green4", "red", "purple", "black", "yellow", "pink")
+
+#Heatmap
+cim(metabo.pca, row.sideColors = colors[groups],
+    title = "Heatmap: metabo non-normalized")
+
+
+##Metabo sum noralized
+metabo.pca <- pca(metabo_sum, ncomp = 2, scale = TRUE, center = TRUE)
+plotIndiv(metabo.pca, ind.names = FALSE,
+          title = "PCA: metabo sum-normalized",
+          group=groups,
+          pch = as.numeric(factor(groups)),
+          pch.levels =groups,
+          legend = TRUE)
+
+#Heatmap
+cim(metabo.pca, row.sideColors = colors[groups],
+    title = "Heatmap: metabo sum-normalized", margins=c(2,2))
+
+
+##Metabo sum noralized
+metabo.pca <- pca(metabo_log, ncomp = 2, scale = TRUE, center = TRUE)
+plotIndiv(metabo.pca, ind.names = FALSE,
+          title = "PCA: metabo log-normalized",
+          group=groups,
+          pch = as.numeric(factor(groups)),
+          pch.levels =groups,
+          legend = TRUE)
+
+#Heatmap
+cim(metabo.pca, row.sideColors = colors[groups],
+    title = "Heatmap: metabo log-normalized")
+
+##Metabo sum log noralized
+metabo.pca <- pca(metabo_sum_log, ncomp = 2, scale = TRUE, center = TRUE)
+plotIndiv(metabo.pca, ind.names = FALSE,
+          title = "PCA: metabo sum log-normalized",
+          group=groups,
+          pch = as.numeric(factor(groups)),
+          pch.levels =groups,
+          legend = TRUE)
+
+#Heatmap
+cim(metabo.pca, row.sideColors = colors[groups],
+    title = "Heatmap: metabo log-normalized")
+```
+
+Continue with `metabo_log` normalization
+
+```{r}
+metabo.pca <- pca(metabo_log, ncomp = 3)
+plotIndiv(metabo.pca,
+          group=groups,
+          title = "PCA: Metabo log-normalized",
+          legend = TRUE)
+
+metabo.plsda <- plsda(metabo_log, groups, ncomp = 3)
+plotIndiv(metabo.plsda,
+          title = "PLS-DA: Metabo log-normalized",
+          legend = TRUE)
+
+#Count NA values
+metabo.splsda <- splsda(metabo_log, groups, ncomp = 3, keepX = c(10, 10, 10))
+plotIndiv(metabo.splsda,
+          title = "sPLS-DA: Metabo log-normalized, keepX = 10",
+          comp = c(1, 2),
+          legend = TRUE,
+          col.per.group = colors)
+
+?plotIndiv
+
+plotVar(metabo.splsda)
+
+cim(metabo.splsda, row.sideColors = colors[groups],
+            title = "Heatmap: metabo splsda keepX = 10",
+            legend = list(levels(groups)))
+```
+
+Integrate with proteomics data
+
+
+```{r}
+proteo <- read.table(paste0(workdir, "/M66_50_intotal_afterimputation_withappBBS_BBS.txt"), header = TRUE, sep = "\t", check.names = FALSE, dec = ",")
+proteo <- proteo %>% 
+  column_to_rownames("T: Genes") %>%
+  select(-c('T: Protein.Group', 
+  'T: Protein.Ids', 
+  'T: Protein.Names', 
+  'T: First.Protein.Description')) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("proteo") %>%
+  inner_join(meta, by = "proteo") %>%
+  column_to_rownames("metabo") %>%
+  select(-c('proteo', 'group'))
+
+dim(proteo)
+
+
+proteo.integrate <- proteo[intersect(rownames(proteo), rownames(metabo_log)), ]
+metabo_log.integrate <- metabo_log[intersect(rownames(proteo), rownames(metabo_log)), ]
+```
+
+block pls
+
+```{r, fig.width=15, fig.height=10}
+
+groups.integrate <- as.factor(meta[meta$metabo %in% rownames(proteo.integrate), ]$group)
+
+proteo.metabo.pls <- pls(metabo_log.integrate, proteo.integrate)
+plotIndiv(proteo.metabo.pls, ind.names = FALSE,
+          title = "PLS: Metabo log-normalized and Proteo",
+          group=groups.integrate,
+          pch = as.numeric(factor(groups.integrate)),
+          pch.levels =groups.integrate,
+          legend = TRUE)
+
+
+omics <- list(metabo = metabo_log.integrate, proteo = proteo.integrate)
+
+
+proteo.metabo.block.plsda <- block.splsda(omics, groups.integrate, keepX = list(metabo = c(20, 20), proteo = c(50,50))) # run the method
+plotIndiv(proteo.metabo.block.plsda) # plot the samples
+cimDiablo(proteo.metabo.block.plsda, comp = 1, margins = c(7,7))
+
+proteo.metabo.block.plsda <- block.splsda(omics, groups.integrate, keepX = list(metabo = c(20, 20), proteo = c(30,30))) # run the method
+plotIndiv(proteo.metabo.block.plsda) # plot the samples
+cimDiablo(proteo.metabo.block.plsda, comp = 1, margins = c(7,7))
+
+proteo.metabo.block.plsda <- block.splsda(omics, groups.integrate, keepX = list(metabo = c(10, 10), proteo = c(30,30))) # run the method
+plotIndiv(proteo.metabo.block.plsda) # plot the samples
+cimDiablo(proteo.metabo.block.plsda, comp = 1, margins = c(7,7))
+
+proteo.metabo.block.plsda <- block.splsda(omics, groups.integrate, keepX = list(metabo = c(10, 10), proteo = c(20,20))) # run the method
+plotIndiv(proteo.metabo.block.plsda) # plot the samples
+cimDiablo(proteo.metabo.block.plsda, comp = 1, margins = c(7,7))
+
+```
